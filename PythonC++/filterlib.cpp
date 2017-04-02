@@ -8,10 +8,5 @@ BOOST_PYTHON_MODULE(filter)
 {
 	  np::initialize();
 
-    enum_<filter_type>("filter_type")
-        .value("SOBEL_X", SOBEL_X)
-        .value("SOBEL_Y", SOBEL_X)
-        .value("LAPLACIAN", LAPLACIAN);
-        
 	  def("filter", &filter);
 }
