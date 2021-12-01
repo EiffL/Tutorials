@@ -11,6 +11,120 @@ _DESCRIPTION = """
 _CITATION = """
 """
 
+# Attributes for each galaxy
+_attrs = ['a_g',
+ 'a_r',
+ 'a_i',
+ 'a_z',
+ 'a_y',
+ 'g_extendedness_value',
+ 'r_extendedness_value',
+ 'i_extendedness_value',
+ 'z_extendedness_value',
+ 'y_extendedness_value',
+ 'g_localbackground_flux',
+ 'r_localbackground_flux',
+ 'i_localbackground_flux',
+ 'z_localbackground_flux',
+ 'y_localbackground_flux',
+ 'g_cmodel_flux',
+ 'g_cmodel_fluxsigma',
+ 'g_cmodel_exp_flux',
+ 'g_cmodel_exp_fluxsigma',
+ 'g_cmodel_dev_flux',
+ 'g_cmodel_dev_fluxsigma',
+ 'r_cmodel_flux',
+ 'r_cmodel_fluxsigma',
+ 'r_cmodel_exp_flux',
+ 'r_cmodel_exp_fluxsigma',
+ 'r_cmodel_dev_flux',
+ 'r_cmodel_dev_fluxsigma',
+ 'i_cmodel_flux',
+ 'i_cmodel_fluxsigma',
+ 'i_cmodel_exp_flux',
+ 'i_cmodel_exp_fluxsigma',
+ 'i_cmodel_dev_flux',
+ 'i_cmodel_dev_fluxsigma',
+ 'z_cmodel_flux',
+ 'z_cmodel_fluxsigma',
+ 'z_cmodel_exp_flux',
+ 'z_cmodel_exp_fluxsigma',
+ 'z_cmodel_dev_flux',
+ 'z_cmodel_dev_fluxsigma',
+ 'y_cmodel_flux',
+ 'y_cmodel_fluxsigma',
+ 'y_cmodel_exp_flux',
+ 'y_cmodel_exp_fluxsigma',
+ 'y_cmodel_dev_flux',
+ 'y_cmodel_dev_fluxsigma',
+ 'g_cmodel_mag',
+ 'g_cmodel_magsigma',
+ 'g_cmodel_exp_mag',
+ 'g_cmodel_exp_magsigma',
+ 'g_cmodel_dev_mag',
+ 'g_cmodel_dev_magsigma',
+ 'r_cmodel_mag',
+ 'r_cmodel_magsigma',
+ 'r_cmodel_exp_mag',
+ 'r_cmodel_exp_magsigma',
+ 'r_cmodel_dev_mag',
+ 'r_cmodel_dev_magsigma',
+ 'i_cmodel_mag',
+ 'i_cmodel_magsigma',
+ 'i_cmodel_exp_mag',
+ 'i_cmodel_exp_magsigma',
+ 'i_cmodel_dev_mag',
+ 'i_cmodel_dev_magsigma',
+ 'z_cmodel_mag',
+ 'z_cmodel_magsigma',
+ 'z_cmodel_exp_mag',
+ 'z_cmodel_exp_magsigma',
+ 'z_cmodel_dev_mag',
+ 'z_cmodel_dev_magsigma',
+ 'y_cmodel_mag',
+ 'y_cmodel_magsigma',
+ 'y_cmodel_exp_mag',
+ 'y_cmodel_exp_magsigma',
+ 'y_cmodel_dev_mag',
+ 'y_cmodel_dev_magsigma',
+ 'g_sdssshape_shape11',
+ 'g_sdssshape_shape12',
+ 'g_sdssshape_shape22',
+ 'g_sdssshape_psf_shape11',
+ 'g_sdssshape_psf_shape12',
+ 'g_sdssshape_psf_shape22',
+ 'r_sdssshape_shape11',
+ 'r_sdssshape_shape12',
+ 'r_sdssshape_shape22',
+ 'r_sdssshape_psf_shape11',
+ 'r_sdssshape_psf_shape12',
+ 'r_sdssshape_psf_shape22',
+ 'i_sdssshape_shape11',
+ 'i_sdssshape_shape12',
+ 'i_sdssshape_shape22',
+ 'i_sdssshape_psf_shape11',
+ 'i_sdssshape_psf_shape12',
+ 'i_sdssshape_psf_shape22',
+ 'z_sdssshape_shape11',
+ 'z_sdssshape_shape12',
+ 'z_sdssshape_shape22',
+ 'z_sdssshape_psf_shape11',
+ 'z_sdssshape_psf_shape12',
+ 'z_sdssshape_psf_shape22',
+ 'y_sdssshape_shape11',
+ 'y_sdssshape_shape12',
+ 'y_sdssshape_shape22',
+ 'y_sdssshape_psf_shape11',
+ 'y_sdssshape_psf_shape12',
+ 'y_sdssshape_psf_shape22',
+ 'd_pos',
+ 'd_mag',
+ 'specz_ra',
+ 'specz_dec',
+ 'specz_redshift',
+ 'specz_redshift_err',
+ 'specz_mag_i']
+
 def stack_bands(cutout, target_size=64):
   import numpy as np
 
@@ -48,7 +162,7 @@ class HscPhotoz(tfds.core.GeneratorBasedBuilder):
         description=_DESCRIPTION,
         features=tfds.features.FeaturesDict({
     'image': tfds.features.Tensor(shape=(64, 64, 5), dtype=tf.float32),
-    'attrs': {k: tf.float32 for k in ['specz_redshift', 'a_g', 'a_r', 'a_i', 'a_z', 'a_y']}
+    'attrs': {k: tf.float32 for k in _attrs}
         }),
         # If there's a common (input, target) tuple from the
         # features, specify them here. They'll be used if
@@ -60,8 +174,8 @@ class HscPhotoz(tfds.core.GeneratorBasedBuilder):
 
   def _split_generators(self, dl_manager: tfds.download.DownloadManager):
     """Returns SplitGenerators."""
-    catalog_path = dl_manager.download('https://storage.googleapis.com/ahw2019/hsc_photoz/data/catalog_small.fits')
-    cutouts_path = dl_manager.download('https://storage.googleapis.com/ahw2019/hsc_photoz/data/cutouts_small.hdf')
+    catalog_path = dl_manager.download('https://storage.googleapis.com/ahw2019/hsc_photoz/data/catalog.fits')
+    cutouts_path = dl_manager.download('https://storage.googleapis.com/ahw2019/hsc_photoz/data/cutouts.hdf')
     return [
         tfds.core.SplitGenerator(
             name=tfds.Split.TRAIN,
@@ -89,4 +203,4 @@ class HscPhotoz(tfds.core.GeneratorBasedBuilder):
       im = stack_bands(cutout)
 
       yield object_id, {'image': im, 
-                        'attrs':{k: np.asscalar(row[k]) for k in ['specz_redshift', 'a_g', 'a_r', 'a_i', 'a_z', 'a_y']}}
+                        'attrs':{k: np.asscalar(row[k]) for k in _attrs}}
