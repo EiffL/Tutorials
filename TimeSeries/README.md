@@ -1,3 +1,3 @@
-# Star/Quasar classification by LSTM
+# Star/Quasar classification
 
-- [Exercise notebook](QuasarLightcurvesLSTM.ipynb) ([solution](QuasarLightcurvesLSTM_solution.ipynb))
+- [Classification by LSTM](QuasarLightcurvesLSTM.ipynb) ([solution](QuasarLightcurvesLSTM_solution.ipynb))
