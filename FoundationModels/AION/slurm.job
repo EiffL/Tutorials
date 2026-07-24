@@ -1,0 +1,30 @@
+#!/bin/bash
+#SBATCH --job-name=aion_contrastive
+#SBATCH --partition=boost_usr_prod
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=120G
+#SBATCH --time=02:00:00
+#SBATCH --output=aion-%j.out
+#SBATCH -A tra26_ictpai
+
+module load python
+
+# ---- Environment: offline compute nodes + per-student cache on scratch ----
+export HF_HOME=$SCRATCH/hf_cache        # private HF cache (Arrow build lands here)
+export HF_HUB_OFFLINE=1                 # never attempt network calls
+export HF_DATASETS_OFFLINE=1
+export WANDB_MODE=offline               # sync later from a login node
+export AION_DATA=$WORK/desi_x_ls_aion/data   # shared dataset, single copy in project WORK
+
+# ---- Software environment ----
+source .venv/bin/activate
+#cd $WORK/Tutorials/FoundationModels/AION   # adjust if students have their own clone
+
+# ---- Train ----
+srun python main.py fit -c config/contrastive.yaml \
+    --data.dataset $AION_DATA \
+    --data.num_workers 8 \
+    --trainer.logger.init_args.save_dir $SCRATCH/wandb_logs
