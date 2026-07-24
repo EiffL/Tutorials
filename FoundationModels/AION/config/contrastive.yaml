@@ -17,11 +17,12 @@ model:
   init_temperature: 0.07
 
 data:
-  data_dir: /local/home/flanusse/repo/FoundationModelTutorial/aion_embeddings/desi_x_ls_aion
+  # HuggingFace Hub dataset id; a local directory of parquet shards also
+  # works (e.g. to skip the download on a machine that already has the data).
+  dataset: EiffL/desi_x_ls_aion
   batch_size: 256       # contrastive losses like large batches
   num_workers: 16       # the per-row Arrow->torch decode is CPU-bound: scale with cores
-  num_val_files: 10     # last 10 shards held out for validation
-  # max_files: 30       # uncomment for a quick debugging run on a subset
+  val_fraction: 0.02    # row-level split, fixed seed: identical everywhere
 
 trainer:
   accelerator: auto
