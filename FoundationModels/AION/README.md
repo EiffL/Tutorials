@@ -61,6 +61,22 @@ Two design choices worth noticing:
   modality. This is the perceiver/attention-pooling pattern used in CLIP,
   Flamingo, and AION itself.
 
+### What exactly is in the stored tokens?
+
+A subtle but important detail: the embeddings were generated with `AION.encode()`, which does
+**not** return the raw encoder output. Mirroring how AION's own decoder consumes the encoder,
+it returns `decoder_proj_context(encoder_output) + pos_emb + mod_emb` — the encoder output
+passed through a linear projection, with the fixed sin-cos **positional embeddings** (2D over
+the 24×24 patch grid for images, a degenerate 273×1 grid for spectra) and the learned
+**modality embedding** added back in. You can verify this from the data alone: averaging the
+tokens over many galaxies washes out the galaxy-specific content but not the additive
+constants, and the per-position mean correlates strongly (r ≈ 0.5) with the sin-cos pattern.
+
+The practical consequence: our probe cross-attends to **exactly the same tensor AION's own
+decoder cross-attends to**, positions included — so the learned queries can select tokens by
+position (central patches, specific wavelength regions) and we do not need to add any
+positional information ourselves.
+
 ### The contrastive (InfoNCE / CLIP) loss
 
 Both pooled vectors are L2-normalised, so their dot product is a cosine
@@ -98,6 +114,7 @@ AION/
 ├── aion_contrastive/
 │   ├── data.py                # AIONEmbeddingDataModule (HF datasets over the parquet shards)
 │   └── model.py               # CrossAttentionPool + ContrastiveAlignment
+├── evaluate_probe.ipynb       # after training: k-NN physics benchmark vs mean pooling
 ├── requirements.txt
 └── README.md
 ```
