@@ -1,42 +1,51 @@
-# Aligning AION image and spectrum embeddings with contrastive learning
+# Training a Multimodal Contrastive Embedding Model 
 
 This tutorial trains a *small cross-attention head* on top of frozen
 [AION](https://github.com/PolymathicAI/AION) embeddings, so that the image
 of a galaxy and its spectrum end up close together in a shared 768-d space.
 It is the same idea as [AstroCLIP](https://arxiv.org/abs/2310.03024) — but
 instead of training two large encoders, we reuse a multimodal foundation
-model's embeddings and only learn a tiny pooling module (~10M parameters,
+model's embeddings and only learn a small pooling module (~10M parameters,
 trains in minutes per epoch on a single consumer GPU).
+
+
+### Learning objectives
+
+- **MLOps**: Practical experience training a foundation model with torch, Lightning, 
+and Weights and Biases on a national supercomputer.
+- **Contstrastive Learning**: [to complete]
+- **Adapting Foundation Models for Downstream Tasks**: [to complete]
+- **Probabilistic Inference from Foundation Model Outputs**: [to complete]
+
 
 It is also a compact, idiomatic example of a
 [PyTorch Lightning](https://lightning.ai/docs/pytorch/stable/) (2.6+)
 codebase: a `LightningDataModule`, a `LightningModule`, a YAML config, and a
 `LightningCLI` entrypoint with wandb logging.
 
-## 1. The data
 
-`/local/home/flanusse/repo/FoundationModelTutorial/aion_embeddings/desi_x_ls_aion`
-contains ~96,000 galaxies from the DESI×Legacy Surveys cross-match, stored as
-477 parquet shards (~117 GB). Each row was produced by running the frozen
-AION-base encoder on both modalities and keeping the **full token sequences**:
+## 1. Preparing the project 
 
-| column | shape | meaning |
-|---|---|---|
-| `embedding_image` | `[576, 768]` float16 | one token per Legacy Surveys image patch |
-| `embedding_spectrum` | `[273, 768]` float16 | one token per DESI spectrum segment |
-| `*_provabgs` | scalars | PROVABGS catalog properties (redshift, stellar mass, …) |
+Once you are logged in on Leonardo, you can run the following commands to prepare
+the project:
+```bash
+git clone https://github.com/EiffL/Tutorials.git
+module load python
+cd Tutorials/FoundationModels/AION
+python -m venv --system-site-packages .venv
+.venv/bin/activate
+pip install -r requirements.txt
+```
 
-Because the dataset does not fit in memory, `aion_contrastive/data.py` loads
-it with [HuggingFace `datasets`](https://huggingface.co/docs/datasets): on
-first use the parquet shards are converted into the Arrow cache format (a
-one-time cost — **the cache is as large as the dataset, ~117 GB, so make
-sure the disk has room**; it lives in `~/.cache/huggingface/datasets` unless
-you set `data.cache_dir`). After that, every row is a memory-mapped read and
-`with_format("torch")` converts it to torch tensors on the fly — so we get a
-fully shuffled map-style dataset without ever holding 117 GB in RAM. The
-last `num_val_files` shards are held out for validation.
+Once this is done, you should have all the dependencies installed, and the project
+is ready to run. To be able to see the results of your runs online, please also 
+log into Weights and Biases:
 
-## 2. The model
+```bash
+wandb login
+```
+
+## 2. Understanding the model
 
 AION gives us a *sequence* of tokens per galaxy per modality; contrastive
 learning needs *one vector* per galaxy per modality. The reduction is learned
@@ -52,47 +61,7 @@ AION tokens   [L, 768]    ──┘    ──> cross-attention + MLP ──> mea
 
 The pooler follows the **attentive pooler of V-JEPA 2**
 ([facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2),
-`src/models/attentive_pooler.py`), whose details are worth reading closely:
-
-- Only the *context tokens* are LayerNormed before attention — the learned
-  queries enter raw (they are free parameters, so a norm on them would be
-  redundant), and the cross-attention has no output projection.
-- Optionally, `depth - 1` self-attention blocks process the *token sequence*
-  before pooling (V-JEPA2 probes use up to 4; we default to 1, i.e. pooling
-  only).
-- Initialization: truncated normal (std 0.02) everywhere, zero-init queries,
-  and the last linear of every residual branch rescaled by
-  `1/sqrt(2 * layer_id)`.
-- The optimization recipe also follows their probe evals: AdamW with a
-  *small* weight decay (~2e-3, not the 0.05 typical of full transformers),
-  linear warmup from a low start LR, cosine decay to 0.
-
-Two design choices of our own worth noticing:
-
-- **The pooling block is shared between modalities.** It never needs to know
-  whether it is looking at 576 image tokens or 273 spectrum tokens — attention
-  is naturally length-agnostic.
-- **Only the queries are modality-specific.** `query_image` and
-  `query_spectrum` are two small learned matrices `[num_queries, 768]`; they
-  are what "asks" the token sequence for the information relevant to each
-  modality. This is the perceiver/attention-pooling pattern used in CLIP,
-  Flamingo, and AION itself.
-
-### What exactly is in the stored tokens?
-
-A subtle but important detail: the embeddings were generated with `AION.encode()`, which does
-**not** return the raw encoder output. Mirroring how AION's own decoder consumes the encoder,
-it returns `decoder_proj_context(encoder_output) + pos_emb + mod_emb` — the encoder output
-passed through a linear projection, with the fixed sin-cos **positional embeddings** (2D over
-the 24×24 patch grid for images, a degenerate 273×1 grid for spectra) and the learned
-**modality embedding** added back in. You can verify this from the data alone: averaging the
-tokens over many galaxies washes out the galaxy-specific content but not the additive
-constants, and the per-position mean correlates strongly (r ≈ 0.5) with the sin-cos pattern.
-
-The practical consequence: our probe cross-attends to **exactly the same tensor AION's own
-decoder cross-attends to**, positions included — so the learned queries can select tokens by
-position (central patches, specific wavelength regions) and we do not need to add any
-positional information ourselves.
+`src/models/attentive_pooler.py`).
 
 ### The contrastive (InfoNCE / CLIP) loss
 
@@ -109,13 +78,8 @@ $$
 \right]
 $$
 
-The temperature $\tau$ is learned (initialised at 0.07, as in CLIP). Two
-useful intuitions:
-
-- A model that has learned nothing gives $\mathcal{L} = \log N$
-  (≈ 5.55 for a batch of 256) — we log this as `train/chance_loss`.
-- Every other galaxy in the batch acts as a negative example, which is why
-  contrastive learning likes **large batches**.
+The temperature $\tau$ is learned (initialised at 0.07, as in CLIP). Every other galaxy in the batch acts as 
+a negative example, which is why contrastive learning likes **large batches**.
 
 Nothing about galaxy physics is hand-coded: the only supervision is
 *"this image and this spectrum belong to the same object"*, and the shared
