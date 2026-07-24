@@ -13,7 +13,7 @@
 module load python
 
 # ---- Environment: offline compute nodes + per-student cache on scratch ----
-export HF_HOME=$SCRATCH/hf_cache        # private HF cache (Arrow build lands here)
+export HF_HOME=$FAST/hf_cache        # private HF cache (Arrow build lands here)
 export HF_HUB_OFFLINE=1                 # never attempt network calls
 export HF_DATASETS_OFFLINE=1
 export WANDB_MODE=offline               # sync later from a login node
@@ -26,5 +26,5 @@ source .venv/bin/activate
 # ---- Train ----
 srun python main.py fit -c config/contrastive.yaml \
     --data.dataset $AION_DATA \
-    --data.num_workers 8 \
+    --data.num_workers 12 \
     --trainer.logger.init_args.save_dir $SCRATCH/wandb_logs
