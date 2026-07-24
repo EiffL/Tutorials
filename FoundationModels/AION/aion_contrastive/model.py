@@ -7,12 +7,23 @@ that reduction:
 
                        learned queries (per modality)
                                   |
-        AION tokens ──> [ cross-attention pooling ] ──> vector in R^1024
+        AION tokens ──> [ attentive pooler (V-JEPA2) ] ──> vector in R^768
 
 A small set of *learned query vectors* cross-attends to the token sequence:
 the queries decide, via attention, which tokens matter and summarise them.
-The attention weights themselves are shared between modalities — only the
-queries differ — so the same module can pool either an image or a spectrum.
+The pooler weights are shared between modalities — only the queries differ —
+so the same module can pool either an image or a spectrum.
+
+The pooler follows the attentive-pooler architecture of V-JEPA 2
+(github.com/facebookresearch/vjepa2, ``src/models/attentive_pooler.py``):
+
+  - optional ``depth - 1`` self-attention blocks over the *tokens* before
+    pooling (their probes use up to 4);
+  - a cross-attention block in which only the context tokens are
+    LayerNormed — the queries are free parameters and enter raw — and the
+    attention itself has no output projection;
+  - truncated-normal init (std 0.02) everywhere, zero-init queries, and
+    residual-branch weights rescaled by 1/sqrt(2 * layer_id).
 
 The two resulting vectors are then aligned with the standard CLIP/InfoNCE
 objective: in a batch of N galaxies, the image embedding of galaxy i must
@@ -31,50 +42,122 @@ from lightning.pytorch import LightningModule
 from torch import nn
 
 
-class CrossAttentionPool(nn.Module):
-    """Pools a token sequence [B, L, D] into a single vector [B, output_dim]
-    using a set of learned queries passed in by the caller.
+class CrossAttention(nn.Module):
+    """Multi-head cross-attention, V-JEPA2 style: separate q and kv linear
+    projections, no output projection."""
 
-    This is one pre-LayerNorm transformer block where the queries attend to
-    the tokens (cross-attention) instead of to themselves, followed by a
-    linear head to the shared embedding space.
+    def __init__(self, dim: int, num_heads: int = 12, qkv_bias: bool = True):
+        super().__init__()
+        self.num_heads = num_heads
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
+
+    def forward(self, q: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        B, n, C = q.shape
+        h = self.num_heads
+        q = self.q(q).reshape(B, n, h, C // h).transpose(1, 2)
+        kv = self.kv(x).reshape(B, -1, 2, h, C // h).permute(2, 0, 3, 1, 4)
+        out = F.scaled_dot_product_attention(q, kv[0], kv[1])
+        return out.transpose(1, 2).reshape(B, n, C)
+
+
+class SelfAttentionBlock(nn.Module):
+    """Standard pre-LN transformer block, used on the tokens before pooling
+    when ``depth > 1``."""
+
+    def __init__(self, dim: int, num_heads: int, mlp_ratio: float, qkv_bias: bool):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, num_heads, bias=qkv_bias, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim)
+        hidden = int(dim * mlp_ratio)
+        self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.GELU(), nn.Linear(hidden, dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.norm1(x)
+        x = x + self.attn(y, y, y, need_weights=False)[0]
+        return x + self.mlp(self.norm2(x))
+
+
+class CrossAttentionPool(nn.Module):
+    """V-JEPA2 attentive pooler, adapted to take the learned queries as an
+    input (so two modalities can share the weights but not the queries) and
+    to project the pooled vector into the shared contrastive space. There is
+    a single dimension throughout: the AION token dimension.
+
+    Args:
+        embed_dim: dimension of the AION tokens (and of everything else).
+        num_heads: attention heads (V-JEPA2 uses head_dim 64, i.e. 12 @ 768).
+        mlp_ratio: MLP expansion ratio in the blocks.
+        depth: total blocks; ``depth - 1`` self-attention blocks run over the
+            tokens before the final cross-attention pooling (V-JEPA2 probes
+            use up to 4).
+        qkv_bias: bias in the attention projections.
+        init_std: std of the truncated-normal weight init.
     """
 
     def __init__(
         self,
         embed_dim: int = 768,
-        num_heads: int = 8,
-        output_dim: int = 1024,
+        num_heads: int = 12,
         mlp_ratio: float = 4.0,
+        depth: int = 1,
+        qkv_bias: bool = True,
+        init_std: float = 0.02,
     ):
         super().__init__()
-        self.norm_query = nn.LayerNorm(embed_dim)
-        self.norm_tokens = nn.LayerNorm(embed_dim)
-        self.attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
-
-        hidden = int(embed_dim * mlp_ratio)
-        self.norm_mlp = nn.LayerNorm(embed_dim)
-        self.mlp = nn.Sequential(
-            nn.Linear(embed_dim, hidden), nn.GELU(), nn.Linear(hidden, embed_dim)
+        self.blocks = nn.ModuleList(
+            SelfAttentionBlock(embed_dim, num_heads, mlp_ratio, qkv_bias)
+            for _ in range(depth - 1)
         )
-        self.head = nn.Linear(embed_dim, output_dim)
+
+        # Cross-attention block: LayerNorm on the context only, residuals on
+        # the query path (queries enter un-normalised — they are learned
+        # parameters, free to adopt whatever scale is useful).
+        self.norm_context = nn.LayerNorm(embed_dim)
+        self.xattn = CrossAttention(embed_dim, num_heads, qkv_bias)
+        self.norm_mlp = nn.LayerNorm(embed_dim)
+        hidden = int(embed_dim * mlp_ratio)
+        self.mlp = nn.Sequential(nn.Linear(embed_dim, hidden), nn.GELU(), nn.Linear(hidden, embed_dim))
+
+        self.head = nn.Linear(embed_dim, embed_dim)
+
+        self.init_std = init_std
+        self.apply(self._init_weights)
+        self._rescale_blocks()
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.trunc_normal_(m.weight, std=self.init_std)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def _rescale_blocks(self):
+        """V-JEPA2 depth-scaled init: divide the last linear of each residual
+        branch by sqrt(2 * layer_id) so that the residual stream variance
+        stays controlled as depth grows."""
+        layer_id = 0
+        for layer_id, block in enumerate(self.blocks, start=1):
+            block.attn.out_proj.weight.data.div_(math.sqrt(2.0 * layer_id))
+            block.mlp[-1].weight.data.div_(math.sqrt(2.0 * layer_id))
+        self.mlp[-1].weight.data.div_(math.sqrt(2.0 * (layer_id + 1)))
 
     def forward(self, tokens: torch.Tensor, queries: torch.Tensor) -> torch.Tensor:
         # tokens : [B, L, D] AION token sequence (any L — that is the point!)
         # queries: [Q, D] learned, modality-specific
-        queries = queries.unsqueeze(0).expand(tokens.shape[0], -1, -1)  # [B, Q, D]
+        for block in self.blocks:
+            tokens = block(tokens)
 
-        # Queries attend to the tokens, with residual connections as in a
-        # standard transformer block.
-        attended, _ = self.attention(
-            self.norm_query(queries), self.norm_tokens(tokens), self.norm_tokens(tokens)
-        )
-        x = queries + attended
-        x = x + self.mlp(self.norm_mlp(x))
+        q = queries.unsqueeze(0).expand(tokens.shape[0], -1, -1)  # [B, Q, D]
+        q = q + self.xattn(q, self.norm_context(tokens))
+        q = q + self.mlp(self.norm_mlp(q))
 
         # Average the Q query outputs into one summary vector, then project
         # into the shared contrastive space.
-        return self.head(x.mean(dim=1))
+        return self.head(q.mean(dim=1))
 
 
 def clip_loss(z_image: torch.Tensor, z_spectrum: torch.Tensor, logit_scale: torch.Tensor):
@@ -89,12 +172,20 @@ def clip_loss(z_image: torch.Tensor, z_spectrum: torch.Tensor, logit_scale: torc
 class ContrastiveAlignment(LightningModule):
     """LightningModule tying everything together.
 
+    The optimization recipe follows the V-JEPA2 attentive-probe evals:
+    AdamW with a small weight decay (their sweeps use 5e-4 to 8e-3, far
+    below the 0.05 common for full transformers), linear warmup from a low
+    start LR, and cosine decay to 0.
+
     Args:
-        embed_dim: dimension of the AION tokens (768 for AION-base).
-        num_heads: attention heads in the pooling block.
-        output_dim: dimension of the shared contrastive space.
+        embed_dim: dimension of the AION tokens (768 for AION-base), used
+            throughout — including for the shared contrastive space.
+        num_heads: attention heads in the pooler.
         num_queries: how many learned query vectors per modality.
-        lr: peak learning rate (AdamW, cosine-annealed).
+        depth: pooler depth (``depth - 1`` self-attention blocks + pooling).
+        lr: peak learning rate.
+        start_lr: warmup starting learning rate.
+        warmup_epochs: linear warmup duration.
         weight_decay: AdamW weight decay.
         init_temperature: initial softmax temperature of the CLIP loss; it is
             learned during training (as in CLIP) and logged as a diagnostic.
@@ -103,21 +194,26 @@ class ContrastiveAlignment(LightningModule):
     def __init__(
         self,
         embed_dim: int = 768,
-        num_heads: int = 8,
-        output_dim: int = 1024,
+        num_heads: int = 12,
         num_queries: int = 8,
-        lr: float = 3e-4,
-        weight_decay: float = 0.05,
+        depth: int = 1,
+        lr: float = 5e-4,
+        start_lr: float = 2e-4,
+        warmup_epochs: int = 1,
+        weight_decay: float = 2e-3,
         init_temperature: float = 0.07,
     ):
         super().__init__()
         self.save_hyperparameters()
 
-        self.pool = CrossAttentionPool(embed_dim, num_heads, output_dim)
+        self.pool = CrossAttentionPool(embed_dim, num_heads, depth=depth)
         # One set of learned queries per modality — this is the only
-        # modality-specific part of the model.
-        self.query_image = nn.Parameter(0.02 * torch.randn(num_queries, embed_dim))
-        self.query_spectrum = nn.Parameter(0.02 * torch.randn(num_queries, embed_dim))
+        # modality-specific part of the model. V-JEPA2 inits them as
+        # trunc_normal(0.02) around zero.
+        self.query_image = nn.Parameter(torch.zeros(num_queries, embed_dim))
+        self.query_spectrum = nn.Parameter(torch.zeros(num_queries, embed_dim))
+        nn.init.trunc_normal_(self.query_image, std=0.02)
+        nn.init.trunc_normal_(self.query_spectrum, std=0.02)
         # Learned (log) inverse temperature, clamped to at most 100 as in CLIP.
         self.log_scale = nn.Parameter(torch.tensor(math.log(1.0 / init_temperature)))
 
@@ -237,7 +333,19 @@ class ContrastiveAlignment(LightningModule):
         optimizer = torch.optim.AdamW(
             self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=self.trainer.max_epochs
+        # V-JEPA2 probe schedule: linear warmup from start_lr, cosine to 0.
+        warmup = self.hparams.warmup_epochs
+        schedulers = [
+            torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=self.hparams.start_lr / self.hparams.lr,
+                total_iters=warmup,
+            ),
+            torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=max(1, self.trainer.max_epochs - warmup)
+            ),
+        ]
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers, milestones=[warmup]
         )
         return {"optimizer": optimizer, "lr_scheduler": scheduler}

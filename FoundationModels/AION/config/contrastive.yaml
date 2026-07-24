@@ -5,11 +5,15 @@ seed_everything: 42
 
 model:
   embed_dim: 768        # AION-base token dimension
-  num_heads: 8
-  output_dim: 1024      # dimension of the shared contrastive space
+  num_heads: 12         # head_dim 64, as in V-JEPA2
   num_queries: 8        # learned queries per modality
-  lr: 3.0e-4
-  weight_decay: 0.05
+  depth: 1              # V-JEPA2 probes go up to 4 (adds self-attn blocks over tokens)
+  # Optimization recipe from the V-JEPA2 attentive-probe evals: AdamW with
+  # *small* weight decay, linear warmup from a low start LR, cosine to 0.
+  lr: 5.0e-4
+  start_lr: 2.0e-4
+  warmup_epochs: 1
+  weight_decay: 2.0e-3
   init_temperature: 0.07
 
 data:
@@ -30,6 +34,10 @@ trainer:
     init_args:
       project: aion-contrastive
       save_dir: wandb_logs
+      # Upload every checkpoint to wandb as a model artifact during training
+      # (the best one gets the "best" alias). This is what lets the evaluation
+      # notebook run anywhere: it downloads the model from the run reference.
+      log_model: all
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:

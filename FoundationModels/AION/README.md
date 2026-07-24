@@ -2,7 +2,7 @@
 
 This tutorial trains a *small cross-attention head* on top of frozen
 [AION](https://github.com/PolymathicAI/AION) embeddings, so that the image
-of a galaxy and its spectrum end up close together in a shared 1024-d space.
+of a galaxy and its spectrum end up close together in a shared 768-d space.
 It is the same idea as [AstroCLIP](https://arxiv.org/abs/2310.03024) — but
 instead of training two large encoders, we reuse a multimodal foundation
 model's embeddings and only learn a tiny pooling module (~10M parameters,
@@ -45,12 +45,29 @@ by a single cross-attention block (`CrossAttentionPool` in
 
 ```
 learned queries [Q, 768]  ──┐
-                            ├──> cross-attention + MLP (one pre-LN
-AION tokens   [L, 768]    ──┘    transformer block) ──> mean over Q
-                                                        ──> Linear ──> R^1024
+                            ├──> [depth-1 self-attn blocks over tokens]
+AION tokens   [L, 768]    ──┘    ──> cross-attention + MLP ──> mean over Q
+                                                             ──> Linear ──> R^768
 ```
 
-Two design choices worth noticing:
+The pooler follows the **attentive pooler of V-JEPA 2**
+([facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2),
+`src/models/attentive_pooler.py`), whose details are worth reading closely:
+
+- Only the *context tokens* are LayerNormed before attention — the learned
+  queries enter raw (they are free parameters, so a norm on them would be
+  redundant), and the cross-attention has no output projection.
+- Optionally, `depth - 1` self-attention blocks process the *token sequence*
+  before pooling (V-JEPA2 probes use up to 4; we default to 1, i.e. pooling
+  only).
+- Initialization: truncated normal (std 0.02) everywhere, zero-init queries,
+  and the last linear of every residual branch rescaled by
+  `1/sqrt(2 * layer_id)`.
+- The optimization recipe also follows their probe evals: AdamW with a
+  *small* weight decay (~2e-3, not the 0.05 typical of full transformers),
+  linear warmup from a low start LR, cosine decay to 0.
+
+Two design choices of our own worth noticing:
 
 - **The pooling block is shared between modalities.** It never needs to know
   whether it is looking at 576 image tokens or 273 spectrum tokens — attention
