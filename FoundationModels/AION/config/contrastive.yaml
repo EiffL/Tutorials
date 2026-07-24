@@ -1,0 +1,42 @@
+# Configuration for the AION image <-> spectrum contrastive alignment tutorial.
+# Launch with:  python main.py fit -c config/contrastive.yaml
+
+seed_everything: 42
+
+model:
+  embed_dim: 768        # AION-base token dimension
+  num_heads: 8
+  output_dim: 1024      # dimension of the shared contrastive space
+  num_queries: 8        # learned queries per modality
+  lr: 3.0e-4
+  weight_decay: 0.05
+  init_temperature: 0.07
+
+data:
+  data_dir: /local/home/flanusse/repo/FoundationModelTutorial/aion_embeddings/desi_x_ls_aion
+  batch_size: 256       # contrastive losses like large batches
+  num_workers: 4
+  num_val_files: 10     # last 10 shards held out for validation
+  # max_files: 30       # uncomment for a quick debugging run on a subset
+
+trainer:
+  accelerator: auto
+  devices: 1
+  precision: 16-mixed   # the embeddings are stored in float16 anyway
+  max_epochs: 20
+  log_every_n_steps: 10
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: aion-contrastive
+      save_dir: wandb_logs
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val/loss
+        mode: min
+        save_top_k: 1
+        filename: "best-{epoch}-{step}"
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch

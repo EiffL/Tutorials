@@ -1,0 +1,6 @@
+.venv/
+wandb_logs/
+lightning_logs/
+checkpoints/
+__pycache__/
+*.ckpt

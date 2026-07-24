@@ -1,0 +1,9 @@
+torch
+lightning
+jsonargparse[signatures]
+wandb
+datasets
+pyarrow
+pandas
+numpy
+matplotlib
