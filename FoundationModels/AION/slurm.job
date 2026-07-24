@@ -16,12 +16,11 @@ module load python
 export HF_HOME=$SCRATCH/hf_cache        # private HF cache (Arrow build lands here)
 export HF_HUB_OFFLINE=1                 # never attempt network calls
 export HF_DATASETS_OFFLINE=1
-export WANDB_MODE=offline               # sync later from a login node
+export WANDB_MODE=offline                    # sync later from a login node
 export AION_DATA=$WORK/desi_x_ls_aion/data   # shared dataset, single copy in project WORK
 
 # ---- Software environment ----
 source .venv/bin/activate
-#cd $WORK/Tutorials/FoundationModels/AION   # adjust if students have their own clone
 
 # ---- Train ----
 srun python main.py fit -c config/contrastive.yaml \
